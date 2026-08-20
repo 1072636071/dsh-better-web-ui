@@ -1,6 +1,6 @@
 # 条目拖拽重排序 + 键盘交互 + 持久化
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Blocked by:** 01
 

@@ -1,6 +1,6 @@
 # Drawer Store + Overlay 注册 + 基础渲染
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Blocked by:** 无——可立即开始
 

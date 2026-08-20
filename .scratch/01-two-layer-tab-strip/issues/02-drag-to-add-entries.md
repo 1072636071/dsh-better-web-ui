@@ -1,6 +1,6 @@
 # 从侧边栏拖入条目 + 去重
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Blocked by:** 01
 

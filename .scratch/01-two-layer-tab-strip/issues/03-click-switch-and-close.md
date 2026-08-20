@@ -1,6 +1,6 @@
 # 条目点击切换 + 关闭移除 + 级联
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Blocked by:** 01
 

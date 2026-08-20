@@ -1,6 +1,6 @@
 # 搜索筛选
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Blocked by:** 01
 
