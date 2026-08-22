@@ -1,28 +1,53 @@
 /* SessionDrawer.module.css — Slide-out drawer panel */
 
-/* ── Trigger button ──────────────────────────────── */
+/* ── Trigger rail（左侧边缘停靠入口，参照 dsh-web-ui-jx rail 模式）── */
 
-.trigger {
+.rail {
+  /* 左边缘垂直居中常驻窄条 */
   position: fixed;
-  top: 8px;
-  right: 310px; /* offset to avoid details panel; adjusted at runtime by plugin */
-  z-index: 100;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  transform-origin: left center;
+  z-index: 2147483644;
+  /* shell.overlay 是点击穿透的 list 槽：条目必须显式恢复指针事件。 */
+  pointer-events: auto;
   width: 32px;
-  height: 32px;
+  padding: 12px 4px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  border: 1px solid var(--dsw-alias-border-l1, #e5e5e5);
-  border-radius: 6px;
+  gap: 4px;
   background: var(--dsw-alias-bg-base, #ffffff);
+  border: 1px solid var(--dsw-alias-border-l1, #e5e5e5);
+  border-left: none;
+  border-radius: 0 8px 8px 0;
   color: var(--dsw-alias-label-secondary, #666666);
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  user-select: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease,
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.trigger:hover {
+.rail:hover {
   background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
   color: var(--dsw-alias-label-primary, #1a1a1a);
+  border-color: var(--dsw-alias-border-l2, #d4d4d4);
+  /* hover 放大但不位移（transform-origin: left center） */
+  transform: translateY(-50%) scale(1.08);
+}
+
+.rail:active {
+  transform: translateY(-50%) scale(0.96);
+  transition-duration: 100ms;
+}
+
+.rail:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary, #3b82f6);
+  outline-offset: 2px;
 }
 
 /* ── Overlay + Backdrop ──────────────────────────── */
@@ -31,44 +56,39 @@
   position: fixed;
   inset: 0;
   z-index: 1000;
-  pointer-events: auto;
+  /* 非模态：容器不拦截任何指针事件，页面（含侧边栏）保持可交互，
+     这样打开抽屉的同时仍能从侧边栏拖拽会话进来。 */
+  pointer-events: none;
 }
 
-.backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  animation: fadeIn 150ms ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-/* ── Panel ───────────────────────────────────────── */
+/* ── Panel（rail 触发按钮旁的紧凑浮动弹窗，不整侧停靠） ── */
 
 .panel {
   position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(600px, 60vw);
-  max-height: 50vh;
+  /* 锚定在左缘 rail 旁边：rail 宽 32px + 8px 间距，垂直与 rail 对齐 */
+  top: 50%;
+  left: 40px;
+  transform: translateY(-50%);
+  /* 紧凑尺寸：限宽限高，只占一小块浮动卡片，不遮挡整个会话区 */
+  width: min(300px, calc(100vw - 56px));
+  max-height: min(60vh, 520px);
+  /* 容器已设为穿透，面板自身恢复指针事件。 */
+  pointer-events: auto;
   background: var(--dsw-alias-bg-base, #ffffff);
   border: 1px solid var(--dsw-alias-border-l1, #e5e5e5);
-  border-top: none;
-  border-radius: 0 0 12px 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.16),
+    0 2px 8px rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
-  animation: slideDown 200ms ease;
+  animation: popInLeft 180ms cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
 }
 
-@keyframes slideDown {
-  from { transform: translateX(-50%) translateY(-100%); }
-  to { transform: translateX(-50%) translateY(0); }
+@keyframes popInLeft {
+  from { opacity: 0; transform: translateY(-50%) translateX(-10px); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0); }
 }
 
 /* ── Search bar ──────────────────────────────────── */
@@ -265,6 +285,38 @@
   45%  { background: rgba(59, 130, 246, 0.1); }
   60%  { background: transparent; }
   100% { background: transparent; }
+}
+
+/* ── Reject feedback (ticket 05, PRD 决策9) ──────── */
+/* 三级解析全未命中的可见拒绝：红色边框闪烁 + 轻微抖动，约一秒后
+   随组件本地状态消退（.rejectFlash 由 handleDrop 的最终 miss 分支驱动，
+   纯 CSS 动画，不引入任何通知基建）。 */
+
+.rejectFlash {
+  animation:
+    rejectBlink 250ms ease-in-out 4,
+    rejectShake 500ms ease-in-out 2;
+}
+
+@keyframes rejectBlink {
+  0%, 100% {
+    border-color: var(--dsw-alias-border-l1, #e5e5e5);
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.16),
+      0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+  50% {
+    border-color: var(--dsw-alias-state-danger-primary, #ef4444);
+    box-shadow:
+      0 8px 32px rgba(239, 68, 68, 0.20),
+      inset 0 0 0 1px var(--dsw-alias-state-danger-primary, #ef4444);
+  }
+}
+
+@keyframes rejectShake {
+  0%, 100% { transform: translateY(-50%) translateX(0); }
+  25%      { transform: translateY(-50%) translateX(-4px); }
+  75%      { transform: translateY(-50%) translateX(4px); }
 }
 
 /* ── Drag reorder feedback (ticket 05) ───────────── */

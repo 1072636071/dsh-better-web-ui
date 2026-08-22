@@ -8,8 +8,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { SessionId, WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
-import { createDrawerStore, type DrawerState, type DrawerEntry } from './drawer-store.ts'
-import { SessionDrawer } from './SessionDrawer.tsx'
+import { createDrawerStore, UNGROUPED_WORKSPACE_ID, type DrawerState, type DrawerEntry } from './drawer-store.ts'
+import { readWorkspaceSummaries, SessionDrawer } from './SessionDrawer.tsx'
 
 // ── Cordis services this plugin needs ────────────────
 
@@ -21,10 +21,12 @@ export const inject = ['slots', 'sessions', 'workspaces']
 // from the runtime for automatic rehydration + write-through via zustand + immer.
 // This implementation matches the same contract: reads on init, writes on every change.
 
-function createPersistentStore<T>(spec: {
+// Exported for the seam smoke tests (issue 01): tests build the same store
+// wiring that apply() uses. Existing function — no new seam introduced.
+export function createPersistentStore<T>(spec: {
   init: () => T
   persist?: string
-  actions: Record<string, (draft: T, ...args: any[]) => void>
+  actions: Record<string, (draft: T, ...args: any[]) => T | void>
 }) {
   // Rehydrate from localStorage.
   let state: T = spec.init()
@@ -52,10 +54,12 @@ function createPersistentStore<T>(spec: {
     listeners.add(fn)
     return () => { listeners.delete(fn) }
   }
-  function update(updater: (draft: T) => void) {
+  // Actions either return a new state to replace the draft wholesale, or
+  // nothing to keep it; persistence + notification happen on every call.
+  function update(updater: (draft: T) => T | void) {
     const draft = structuredClone(state) as T
-    updater(draft)
-    state = draft
+    const next = updater(draft)
+    state = (typeof next === 'undefined' ? draft : next) as T
     // Write-through to localStorage.
     if (persistKey) {
       try { localStorage.setItem(persistKey, JSON.stringify(state)) } catch { /* quota/private */ }
@@ -84,13 +88,57 @@ function useStore<T>(store: { getState: () => T; subscribe: (fn: () => void) => 
 
 // ── Wrapper component ────────────────────────────────
 
+/**
+ * Read a workspace's current session entries straight from the service
+ * snapshots — called at drop time so batch filling always uses the
+ * authoritative view, never a render-stale one.
+ */
+function collectWorkspaceEntries(sessions: any, workspaces: any, workspaceId: WorkspaceId): DrawerEntry[] {
+  const entries: DrawerEntry[] = []
+  try {
+    const wsSnap = workspaces?.list?.getSnapshot?.()
+    const sessSnap = sessions?.list?.getSnapshot?.()
+    const ws = readWorkspaceSummaries(wsSnap).find((w: any) => w.workspaceId === workspaceId)
+    for (const sid of ws?.sessionIds ?? []) {
+      const info = sessSnap?.byId?.[sid] as any
+      entries.push({ sessionId: sid as SessionId, title: info?.title ?? info?.name ?? sid })
+    }
+  } catch { /* service may not be available */ }
+  return entries
+}
+
+/**
+ * Collect every snapshot session NOT claimed by any real workspace's
+ * sessionIds — the membership of the sentinel「未分组」group when the sidebar's
+ * ungrouped bucket head is dropped in.
+ */
+function collectUngroupedEntries(sessions: any, workspaces: any): DrawerEntry[] {
+  try {
+    const grouped = new Set<string>()
+    const wsSnap = workspaces?.list?.getSnapshot?.()
+    for (const ws of readWorkspaceSummaries(wsSnap)) {
+      for (const sid of ws.sessionIds ?? []) grouped.add(sid)
+    }
+    const sessSnap = sessions?.list?.getSnapshot?.()
+    return Object.entries(sessSnap?.byId ?? {})
+      .filter(([sid]) => !grouped.has(sid))
+      .map(([sid, info]) => {
+        const i = info as any
+        return { sessionId: sid as SessionId, title: i?.title ?? i?.name ?? sid }
+      })
+  } catch { /* service may not be available */ return [] }
+}
+
 interface DrawerWrapperProps {
   store: ReturnType<typeof createPersistentStore<DrawerState>>
   sessions: any
   workspaces: any
 }
 
-function DrawerWrapper({ store, sessions, workspaces }: DrawerWrapperProps) {
+// Exported for the seam smoke tests: the single test boundary is
+// "fake services + real store + this real wrapper". Existing function — no
+// new seam introduced.
+export function DrawerWrapper({ store, sessions, workspaces }: DrawerWrapperProps) {
   const state = useStore(store)
 
   // Read live workspace names from workspaces service.
@@ -98,8 +146,8 @@ function DrawerWrapper({ store, sessions, workspaces }: DrawerWrapperProps) {
     const names: Record<string, string> = {}
     try {
       const snapshot = workspaces.list?.getSnapshot?.()
-      if (snapshot?.items) {
-        for (const ws of snapshot.items) {
+      for (const ws of readWorkspaceSummaries(snapshot)) {
+        if (ws.workspaceId != null) {
           names[ws.workspaceId] = ws.title ?? ws.workspaceId
         }
       }
@@ -123,31 +171,17 @@ function DrawerWrapper({ store, sessions, workspaces }: DrawerWrapperProps) {
   }, [sessions])
 
   // Build a lookup: workspaceId → session entries (for drag-workspace population).
-  const workspaceSessionEntries = useMemo(() => {
-    const map: Record<string, DrawerEntry[]> = {}
-    try {
-      const wsSnapshot = workspaces.list?.getSnapshot?.()
-      const sessSnapshot = sessions.list?.getSnapshot?.()
-      if (wsSnapshot?.items && sessSnapshot?.byId) {
-        for (const ws of wsSnapshot.items) {
-          map[ws.workspaceId] = (ws.sessionIds ?? []).map((sid: string) => {
-            const info = sessSnapshot.byId[sid] as any
-            return { sessionId: sid as SessionId, title: info?.title ?? info?.name ?? sid }
-          })
-        }
-      }
-    } catch { /* ignore */ }
-    return map
-  }, [workspaces, sessions])
-
   const boundActions = useMemo(() => ({
     toggle: () => store.actions.toggle(),
     closeDrawer: () => store.actions.closeDrawer(),
     addEntry: (wsId: WorkspaceId, wsTitle: string, sessId: SessionId, sessTitle: string) =>
       store.actions.addEntry(wsId, wsTitle, sessId, sessTitle),
-    /** Add a workspace group AND populate it with the workspace's existing sessions (single batch update). */
+    /** Add a workspace group AND populate it with the workspace's existing sessions (single batch update).
+     *  The sentinel「未分组」key routes to the ungrouped membership instead. */
     addGroupWithSessions: (wsId: WorkspaceId, title: string) => {
-      const entries = workspaceSessionEntries[wsId] ?? []
+      const entries = wsId === UNGROUPED_WORKSPACE_ID
+        ? collectUngroupedEntries(sessions, workspaces)
+        : collectWorkspaceEntries(sessions, workspaces, wsId)
       store.actions.addGroupWithEntries(wsId, title, entries)
     },
     removeEntry: (wsId: WorkspaceId, sessId: SessionId) =>
@@ -163,9 +197,11 @@ function DrawerWrapper({ store, sessions, workspaces }: DrawerWrapperProps) {
     reorderGroups: (from: number, to: number) =>
       store.actions.reorderGroups(from, to),
     openSession: (sessionId: SessionId) => { sessions.open(sessionId) },
-  }), [store, sessions, workspaceSessionEntries])
+  }), [store, sessions, workspaces])
 
-  return SessionDrawer({ state, actions: boundActions, workspaceNames, sessionNames })
+  // Pass the raw services through: the drawer's tier-3 tolerant adjudication
+  // reads fresh snapshots from them at drop time (ADR-003).
+  return SessionDrawer({ state, actions: boundActions, workspaceNames, sessionNames, services: { sessions, workspaces } })
 }
 
 // ── Entry point ───────────────────────────────────────
@@ -177,15 +213,20 @@ export function apply(ctx: any): void {
   // Create the persistent store (singleton per plugin fiber).
   const store = createPersistentStore(createDrawerStore())
 
-  // Register into shell.overlay (existing list/root slot).
-  ctx.effect(
-    () => ctx.slots.register({
+  // Register into shell.overlay (list slot declared by ui-layout's AppFrame).
+  // Two-phase pattern (same as dsh-better-sidebar / the slot-catalog example):
+  // slots.inject waits for the slot declaration to exist, THEN registers our
+  // entry. A bare register() throws "undeclared target" when it runs before
+  // ui-layout applied, failing the plugin fiber silently. The injection
+  // controller installs through this caller's fiber, so plugin unload
+  // disposes the registration.
+  ctx.slots.inject('shell.overlay', () =>
+    ctx.slots.register({
       name: 'shell.overlay',
       id: 'session-drawer',
       order: 100,
     }, function SessionDrawerEntry() {
       return DrawerWrapper({ store, sessions, workspaces })
     }),
-    'session-drawer: overlay registration',
   )
 }
