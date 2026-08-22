@@ -1,0 +1,6 @@
+# 提交卫生：依赖、构建产物与本地状态不入库
+node_modules/
+lib/
+.pnpm-store/
+.agent-teams/
+.temp/
